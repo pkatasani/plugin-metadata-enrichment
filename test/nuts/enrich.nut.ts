@@ -20,7 +20,7 @@ import { execCmd } from '@salesforce/cli-plugins-testkit';
 import { SourceTestkit } from '@salesforce/source-testkit';
 
 const REPO = 'https://github.com/trailheadapps/dreamhouse-lwc.git';
-const SAMPLE_LWC = 'LightningComponentBundle:propertyCard'; // LWC from dreamhouse-lwc
+const SAMPLE_LWC = 'LightningComponentBundle:barcodeScanner'; // LWC from dreamhouse-lwc
 
 describe('metadata enrich NUTs', () => {
   let testkit: SourceTestkit;
@@ -65,6 +65,11 @@ describe('metadata enrich NUTs', () => {
   describe('--metadata flag', () => {
     it('should accept metadata flag with LightningComponentBundle', () => {
       const result = runEnrich(`--target-org ${testkit.username} --metadata ${SAMPLE_LWC}`);
+      /* eslint-disable no-console */
+      console.log('===== STDOUT =====\n' + result.shellOutput.stdout);
+      console.log('===== STDERR =====\n' + result.shellOutput.stderr);
+      console.log('===== EXIT CODE =====\n' + result.shellOutput.code);
+      /* eslint-enable no-console */
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
 
@@ -83,10 +88,7 @@ describe('metadata enrich NUTs', () => {
 
   describe('error scenarios', () => {
     it('should fail when target-org is invalid or not authorized', () => {
-      const result = runEnrich(
-        `--target-org NoSuchOrg@example.com --metadata ${SAMPLE_LWC}`,
-        { ensureExitCode: 1 }
-      );
+      const result = runEnrich(`--target-org NoSuchOrg@example.com --metadata ${SAMPLE_LWC}`, { ensureExitCode: 1 });
       const output = (result.shellOutput.stderr || result.shellOutput.stdout || '').toLowerCase();
       expect(output.length).to.be.greaterThan(0);
     });
