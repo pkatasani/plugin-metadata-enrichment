@@ -66,9 +66,8 @@ describe('metadata enrich NUTs', () => {
     it('should accept metadata flag with LightningComponentBundle', () => {
       const result = runEnrich(`--target-org ${testkit.username} --metadata ${SAMPLE_LWC}`);
       /* eslint-disable no-console */
-      console.log('===== STDOUT =====\n' + result.shellOutput.stdout);
-      console.log('===== STDERR =====\n' + result.shellOutput.stderr);
-      console.log('===== EXIT CODE =====\n' + result.shellOutput.code);
+      console.log('===== FULL RESULT =====');
+      console.dir(result, { depth: null, colors: true });
       /* eslint-enable no-console */
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
