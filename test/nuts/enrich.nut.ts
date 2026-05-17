@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +21,8 @@ import { fileURLToPath } from 'node:url';
 import { expect } from 'chai';
 import { execCmd } from '@salesforce/cli-plugins-testkit';
 import { SourceTestkit } from '@salesforce/source-testkit';
+import * as chai from 'chai';
+chai.config.truncateThreshold = 0;
 
 const REPO = 'https://github.com/trailheadapps/dreamhouse-lwc.git';
 const SAMPLE_LWC = 'LightningComponentBundle:barcodeScanner'; // LWC from dreamhouse-lwc
@@ -58,7 +59,7 @@ describe('metadata enrich NUTs', () => {
       const authFile = join(tmpdir(), `nut-auth-${Date.now()}.txt`);
       writeFileSync(authFile, authUrl);
       try {
-        execSync(`sf org login sfdx-url --sfdx-url-file "${authFile}" --alias "${resolvedTargetOrg}" --set-default`, {
+        execSync(`sf org login sfdx-url --sfdx-url-file "${authFile}" --alias "${TARGET_ORG}" --set-default`, {
           cwd: testkit.projectDir,
           stdio: 'inherit',
         });
