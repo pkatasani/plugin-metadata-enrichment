@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+import { execSync } from 'node:child_process';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'chai';
 import { execCmd } from '@salesforce/cli-plugins-testkit';
@@ -21,15 +25,38 @@ import { SourceTestkit } from '@salesforce/source-testkit';
 
 const REPO = 'https://github.com/trailheadapps/dreamhouse-lwc.git';
 const SAMPLE_LWC = 'LightningComponentBundle:barcodeScanner'; // LWC from dreamhouse-lwc
+const TARGET_ORG = 'epic.out.bc4fa5dfeb2f@orgfarm.salesforce.com';
 
 describe('metadata enrich NUTs', () => {
   let testkit: SourceTestkit;
 
   before(async () => {
+    // Grab the auth URL while HOME still points to user's real home
+    const orgInfo = JSON.parse(execSync(`sf org display --target-org ${TARGET_ORG} --verbose --json`).toString()) as {
+      result: { sfdxAuthUrl?: string };
+    };
+    const authUrl = orgInfo.result.sfdxAuthUrl;
+    if (!authUrl) {
+      throw new Error(`Could not retrieve sfdxAuthUrl for ${TARGET_ORG}. Re-auth with sf org login web.`);
+    }
+
     testkit = await SourceTestkit.create({
       repository: REPO,
       nut: fileURLToPath(import.meta.url),
+      orgless: true,
     });
+
+    // Inject auth into the test session's isolated home so execCmd subprocesses can find this org
+    const authFile = join(tmpdir(), `nut-auth-${Date.now()}.txt`);
+    writeFileSync(authFile, authUrl);
+    try {
+      execSync(`sf org login sfdx-url --sfdx-url-file "${authFile}" --alias "${TARGET_ORG}" --set-default`, {
+        cwd: testkit.projectDir,
+        stdio: 'inherit',
+      });
+    } finally {
+      unlinkSync(authFile);
+    }
   });
 
   after(async () => {
@@ -52,7 +79,7 @@ describe('metadata enrich NUTs', () => {
 
   describe('required flags', () => {
     it('should fail when metadata flag is missing', () => {
-      const result = runEnrich(`--target-org ${testkit.username}`, { ensureExitCode: 2 });
+      const result = runEnrich(`--target-org ${TARGET_ORG}`, { ensureExitCode: 2 });
       expect(result.shellOutput.stderr).to.include('Missing required flag');
     });
 
@@ -64,23 +91,19 @@ describe('metadata enrich NUTs', () => {
 
   describe('--metadata flag', () => {
     it('should accept metadata flag with LightningComponentBundle', () => {
-      const result = runEnrich(`--target-org ${testkit.username} --metadata ${SAMPLE_LWC}`);
-      /* eslint-disable no-console */
-      console.log('===== FULL RESULT =====');
-      console.dir(result, { depth: null, colors: true });
-      /* eslint-enable no-console */
+      const result = runEnrich(`--target-org ${TARGET_ORG} --metadata ${SAMPLE_LWC}`);
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
 
     it('should accept multiple metadata entries', () => {
       const result = runEnrich(
-        `--target-org ${testkit.username} --metadata ${SAMPLE_LWC} LightningComponentBundle:propertySummary`
+        `--target-org ${TARGET_ORG} --metadata ${SAMPLE_LWC} LightningComponentBundle:propertySummary`
       );
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
 
     it('should accept -m short flag', () => {
-      const result = runEnrich(`--target-org ${testkit.username} -m ${SAMPLE_LWC}`);
+      const result = runEnrich(`--target-org ${TARGET_ORG} -m ${SAMPLE_LWC}`);
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
   });
@@ -95,7 +118,7 @@ describe('metadata enrich NUTs', () => {
 
   describe('--json', () => {
     it('should output metrics-shaped JSON when --json is used and command runs', () => {
-      const result = runEnrich(`--target-org ${testkit.username} --metadata ${SAMPLE_LWC} --json`);
+      const result = runEnrich(`--target-org ${TARGET_ORG} --metadata ${SAMPLE_LWC} --json`);
       const output = result.jsonOutput as Record<string, unknown> | undefined;
       const metrics = output?.result as Record<string, unknown> | undefined;
       if (metrics && typeof metrics === 'object') {
@@ -104,6 +127,273 @@ describe('metadata enrich NUTs', () => {
         expect(metrics).to.have.nested.property('fail.count');
         expect(metrics).to.have.property('total');
       }
+    });
+  });
+
+  describe('single-component enrichment', () => {
+    const SINGLE_LWC = 'LightningComponentBundle:barcodeScanner';
+    const SINGLE_LWC_NAME = 'barcodeScanner';
+
+    it('should successfully enrich a single component', () => {
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${SINGLE_LWC}`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 1');
+      expect(stdout).to.include(SINGLE_LWC_NAME);
+      expect(stdout).to.include('LightningComponentBundle');
+      expect(stdout).to.include('Success');
+      expect(stdout, 'expected a req- prefixed request ID (e.g. req-0514-Ujt7QQs1) in the results table').to.match(
+        /req-\w+/
+      );
+    });
+  });
+
+  describe('wildcard component enrichment', () => {
+    const WILDCARD_METADATA = '"LightningComponentBundle:propertyTile*"';
+    const EXPECTED_COMPONENTS = ['propertyTile', 'propertyTileList'];
+
+    it('should successfully enrich all wildcard-matched components and report correct human output', () => {
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${WILDCARD_METADATA}`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 2');
+      expect(stdout).to.include('LightningComponentBundle');
+      for (const name of EXPECTED_COMPONENTS) {
+        expect(stdout).to.include(name);
+      }
+      expect(stdout).to.include('Success');
+      expect(stdout, 'expected a req- prefixed request ID (e.g. req-0514-Ujt7QQs1) in the results table').to.match(
+        /req-\w+/
+      );
+    });
+  });
+
+  describe('multiple explicit components enrichment', () => {
+    const COMPONENTS = ['barcodeScanner', 'daysOnMarket', 'paginator'];
+    const METADATA_FLAGS = COMPONENTS.map((c) => `--metadata LightningComponentBundle:${c}`).join(' ');
+
+    it('should successfully enrich multiple explicit components and report correct human output', () => {
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} ${METADATA_FLAGS}`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 3');
+      expect(stdout).to.include('LightningComponentBundle');
+      for (const name of COMPONENTS) {
+        expect(stdout).to.include(name);
+      }
+      expect(stdout).to.include('Success');
+      expect(stdout, 'expected a req- prefixed request ID (e.g. req-0514-Ujt7QQs1) in the results table').to.match(
+        /req-\w+/
+      );
+    });
+  });
+
+  describe('file update verification', () => {
+    const COMPONENT = 'LightningComponentBundle:barcodeScanner';
+    const COMPONENT_NAME = 'barcodeScanner';
+    const META_XML_PATH = join('force-app', 'main', 'default', 'lwc', COMPONENT_NAME, `${COMPONENT_NAME}.js-meta.xml`);
+
+    it('should report correct human output and update the .js-meta.xml with an <ai> tag', () => {
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 1');
+      expect(stdout).to.include(COMPONENT_NAME);
+      expect(stdout).to.include('LightningComponentBundle');
+      expect(stdout).to.include('Success');
+      expect(stdout, 'expected a req- prefixed request ID (e.g. req-0514-Ujt7QQs1) in the results table').to.match(
+        /req-\w+/
+      );
+
+      const xmlContent = readFileSync(join(testkit.projectDir, META_XML_PATH), 'utf-8');
+      expect(xmlContent).to.include('<ai>');
+      expect(xmlContent).to.include('</ai>');
+      expect(xmlContent, 'expected <description> inside <ai> tag').to.match(
+        /<ai>[\s\S]*<description>[\s\S]*<\/description>[\s\S]*<\/ai>/
+      );
+      expect(xmlContent, 'expected <score> inside <ai> tag').to.match(
+        /<ai>[\s\S]*<score>[\s\S]*<\/score>[\s\S]*<\/ai>/
+      );
+    });
+  });
+
+  describe('re-enrichment after <ai> tag removal', () => {
+    const COMPONENT = 'LightningComponentBundle:barcodeScanner';
+    const COMPONENT_NAME = 'barcodeScanner';
+    const META_XML_PATH = join('force-app', 'main', 'default', 'lwc', COMPONENT_NAME, `${COMPONENT_NAME}.js-meta.xml`);
+
+    const removeAiTag = (filePath: string): void => {
+      const original = readFileSync(filePath, 'utf-8');
+      const stripped = original.replace(/<ai>[\s\S]*?<\/ai>\s*/g, '');
+      writeFileSync(filePath, stripped, 'utf-8');
+    };
+
+    it('should re-enrich and restore the <ai> tag after it has been stripped from the .js-meta.xml', () => {
+      const metaXmlFilePath = join(testkit.projectDir, META_XML_PATH);
+
+      removeAiTag(metaXmlFilePath);
+      const xmlBeforeEnrich = readFileSync(metaXmlFilePath, 'utf-8');
+      expect(xmlBeforeEnrich).to.not.include('<ai>');
+
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 1');
+      expect(stdout).to.include(COMPONENT_NAME);
+      expect(stdout).to.include('LightningComponentBundle');
+      expect(stdout).to.include('Success');
+      expect(stdout, 'expected a req- prefixed request ID (e.g. req-0514-Ujt7QQs1) in the results table').to.match(
+        /req-\w+/
+      );
+
+      const xmlAfterEnrich = readFileSync(metaXmlFilePath, 'utf-8');
+      expect(xmlAfterEnrich).to.include('<ai>');
+      expect(xmlAfterEnrich).to.include('</ai>');
+      expect(xmlAfterEnrich, 'expected <description> inside <ai> tag').to.match(
+        /<ai>[\s\S]*<description>[\s\S]*<\/description>[\s\S]*<\/ai>/
+      );
+      expect(xmlAfterEnrich, 'expected <score> inside <ai> tag').to.match(
+        /<ai>[\s\S]*<score>[\s\S]*<\/score>[\s\S]*<\/ai>/
+      );
+    });
+  });
+
+  describe('unsupported metadata type enrichment', () => {
+    it('should skip and report a component not found message for an unsupported metadata type', () => {
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ApexClass:testApexClass`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 1');
+      expect(stdout).to.include('ApexClass');
+      expect(stdout).to.include('testApexClass');
+      expect(stdout).to.include('Skipped');
+      expect(stdout).to.include('Component not found in project.');
+    });
+  });
+
+  describe('invalid project workspace', () => {
+    it('should throw InvalidProjectWorkspaceError when run outside a Salesforce DX project directory', () => {
+      const parentDir = join(testkit.projectDir, '..');
+      const result = execCmd(
+        `metadata enrich --target-org ${TARGET_ORG} --metadata LightningComponentBundle:ankerplug`,
+        {
+          cwd: parentDir,
+          ensureExitCode: 1,
+        }
+      );
+      expect(result.shellOutput.stderr).to.include('InvalidProjectWorkspaceError');
+    });
+  });
+
+  describe('missing metadata flag value', () => {
+    it('should error when --metadata flag is provided without a value', () => {
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 2,
+      });
+      expect(result.shellOutput.stderr).to.include('Flag --metadata expects a value');
+    });
+  });
+
+  describe('component not found in project', () => {
+    it('should skip and report component not found for a non-existent LWC component', () => {
+      const result = execCmd(
+        `metadata enrich --target-org ${TARGET_ORG} --metadata LightningComponentBundle:doesNotExist`,
+        {
+          cwd: testkit.projectDir,
+          ensureExitCode: 0,
+        }
+      );
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 1');
+      expect(stdout).to.include('LightningComponentBundle');
+      expect(stdout).to.include('doesNotExist');
+      expect(stdout).to.include('Skipped');
+      expect(stdout).to.include('Component not found in project.');
+    });
+  });
+
+  describe('enrichment with existing <skipUplift>false</skipUplift> in <ai> tag', () => {
+    const COMPONENT = 'LightningComponentBundle:barcodeScanner';
+    const COMPONENT_NAME = 'barcodeScanner';
+    const META_XML_PATH = join('force-app', 'main', 'default', 'lwc', COMPONENT_NAME, `${COMPONENT_NAME}.js-meta.xml`);
+
+    it('should enrich and preserve <skipUplift>false</skipUplift> inside the <ai> tag', () => {
+      const metaXmlFilePath = join(testkit.projectDir, META_XML_PATH);
+
+      // Ensure <ai> block exists with <skipUplift>false</skipUplift> before enrichment
+      const original = readFileSync(metaXmlFilePath, 'utf-8');
+      const stripped = original.replace(/<ai>[\s\S]*?<\/ai>\s*/g, '');
+      const withSkipUplift = stripped.replace(
+        '</LightningComponentBundle>',
+        '    <ai>\n        <skipUplift>false</skipUplift>\n    </ai>\n</LightningComponentBundle>'
+      );
+      writeFileSync(metaXmlFilePath, withSkipUplift, 'utf-8');
+
+      const xmlBefore = readFileSync(metaXmlFilePath, 'utf-8');
+      expect(xmlBefore).to.include('<skipUplift>false</skipUplift>');
+
+      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+      const { stdout } = result.shellOutput;
+      expect(stdout).to.include('Total Components Processed: 1');
+      expect(stdout).to.include(COMPONENT_NAME);
+      expect(stdout).to.include('LightningComponentBundle');
+      expect(stdout).to.include('Success');
+      expect(stdout, 'expected a req- prefixed request ID (e.g. req-0514-Ujt7QQs1) in the results table').to.match(
+        /req-\w+/
+      );
+
+      const xmlAfter = readFileSync(metaXmlFilePath, 'utf-8');
+      expect(xmlAfter, 'expected <description> inside <ai> tag').to.match(
+        /<ai>[\s\S]*<description>[\s\S]*<\/description>[\s\S]*<\/ai>/
+      );
+      expect(xmlAfter, 'expected <score> inside <ai> tag').to.match(/<ai>[\s\S]*<score>[\s\S]*<\/score>[\s\S]*<\/ai>/);
+      expect(xmlAfter).to.include('<skipUplift>false</skipUplift>');
+    });
+  });
+
+  describe('enrichment skipped when <skipUplift>true</skipUplift> is set in <ai> tag', () => {
+    const COMPONENT = 'LightningComponentBundle:barcodeScanner';
+    const COMPONENT_NAME = 'barcodeScanner';
+    const META_XML_PATH = join('force-app', 'main', 'default', 'lwc', COMPONENT_NAME, `${COMPONENT_NAME}.js-meta.xml`);
+
+    it('should not update the .js-meta.xml file when <skipUplift>true</skipUplift> is present in the <ai> tag', () => {
+      const metaXmlFilePath = join(testkit.projectDir, META_XML_PATH);
+
+      // Ensure <ai> block exists with <skipUplift>true</skipUplift> before enrichment
+      const original = readFileSync(metaXmlFilePath, 'utf-8');
+      const stripped = original.replace(/<ai>[\s\S]*?<\/ai>\s*/g, '');
+      const withSkipUplift = stripped.replace(
+        '</LightningComponentBundle>',
+        '    <ai>\n        <skipUplift>true</skipUplift>\n    </ai>\n</LightningComponentBundle>'
+      );
+      writeFileSync(metaXmlFilePath, withSkipUplift, 'utf-8');
+
+      const xmlBefore = readFileSync(metaXmlFilePath, 'utf-8');
+      expect(xmlBefore).to.include('<skipUplift>true</skipUplift>');
+
+      execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+        cwd: testkit.projectDir,
+        ensureExitCode: 0,
+      });
+
+      const xmlAfter = readFileSync(metaXmlFilePath, 'utf-8');
+      expect(xmlAfter).to.equal(xmlBefore);
     });
   });
 });

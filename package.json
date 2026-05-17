@@ -8,6 +8,7 @@
     "@oclif/core": "^4",
     "@oclif/multi-stage-output": "^0.8.30",
     "@oclif/table": "^0.5.1",
+    "@salesforce/cli": "^2.135.7",
     "@salesforce/core": "^8.24.3",
     "@salesforce/kit": "^3.2.4",
     "@salesforce/metadata-enrichment": "^0.0.15",
@@ -16,7 +17,7 @@
   },
   "devDependencies": {
     "@oclif/plugin-command-snapshot": "^5.3.8",
-    "@salesforce/cli-plugins-testkit": "^5.3.41",
+    "@salesforce/cli-plugins-testkit": "^5.3.57",
     "@salesforce/dev-scripts": "^11.0.4",
     "@salesforce/plugin-command-reference": "^3.1.79",
     "@salesforce/source-testkit": "^2.2.172",
