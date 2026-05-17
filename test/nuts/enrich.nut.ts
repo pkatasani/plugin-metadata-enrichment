@@ -25,37 +25,49 @@ import { SourceTestkit } from '@salesforce/source-testkit';
 
 const REPO = 'https://github.com/trailheadapps/dreamhouse-lwc.git';
 const SAMPLE_LWC = 'LightningComponentBundle:barcodeScanner'; // LWC from dreamhouse-lwc
-const TARGET_ORG = 'epic.out.bc4fa5dfeb2f@orgfarm.salesforce.com';
+// When NUT_TARGET_ORG is set (local dev with a pre-configured eligible org), use it directly.
+// Otherwise, fall back to scratch-org-based testing (default for CI).
+const TARGET_ORG = process.env.NUT_TARGET_ORG;
 
 describe('metadata enrich NUTs', () => {
   let testkit: SourceTestkit;
+  let resolvedTargetOrg: string;
 
   before(async () => {
-    // Grab the auth URL while HOME still points to user's real home
-    const orgInfo = JSON.parse(execSync(`sf org display --target-org ${TARGET_ORG} --verbose --json`).toString()) as {
-      result: { sfdxAuthUrl?: string };
-    };
-    const authUrl = orgInfo.result.sfdxAuthUrl;
-    if (!authUrl) {
-      throw new Error(`Could not retrieve sfdxAuthUrl for ${TARGET_ORG}. Re-auth with sf org login web.`);
+    let authUrl: string | undefined;
+
+    if (TARGET_ORG) {
+      // Grab the auth URL while HOME still points to user's real home
+      const orgInfo = JSON.parse(execSync(`sf org display --target-org ${TARGET_ORG} --verbose --json`).toString()) as {
+        result: { sfdxAuthUrl?: string };
+      };
+      authUrl = orgInfo.result.sfdxAuthUrl;
+      if (!authUrl) {
+        throw new Error(`Could not retrieve sfdxAuthUrl for ${TARGET_ORG}. Re-auth with sf org login web.`);
+      }
     }
 
     testkit = await SourceTestkit.create({
       repository: REPO,
       nut: fileURLToPath(import.meta.url),
-      orgless: true,
+      orgless: Boolean(TARGET_ORG),
     });
 
-    // Inject auth into the test session's isolated home so execCmd subprocesses can find this org
-    const authFile = join(tmpdir(), `nut-auth-${Date.now()}.txt`);
-    writeFileSync(authFile, authUrl);
-    try {
-      execSync(`sf org login sfdx-url --sfdx-url-file "${authFile}" --alias "${TARGET_ORG}" --set-default`, {
-        cwd: testkit.projectDir,
-        stdio: 'inherit',
-      });
-    } finally {
-      unlinkSync(authFile);
+    if (TARGET_ORG && authUrl) {
+      // Inject auth into the test session's isolated home so execCmd subprocesses can find this org
+      const authFile = join(tmpdir(), `nut-auth-${Date.now()}.txt`);
+      writeFileSync(authFile, authUrl);
+      try {
+        execSync(`sf org login sfdx-url --sfdx-url-file "${authFile}" --alias "${resolvedTargetOrg}" --set-default`, {
+          cwd: testkit.projectDir,
+          stdio: 'inherit',
+        });
+      } finally {
+        unlinkSync(authFile);
+      }
+      resolvedTargetOrg = TARGET_ORG;
+    } else {
+      resolvedTargetOrg = testkit.username;
     }
   });
 
@@ -79,7 +91,7 @@ describe('metadata enrich NUTs', () => {
 
   describe('required flags', () => {
     it('should fail when metadata flag is missing', () => {
-      const result = runEnrich(`--target-org ${TARGET_ORG}`, { ensureExitCode: 2 });
+      const result = runEnrich(`--target-org ${resolvedTargetOrg}`, { ensureExitCode: 2 });
       expect(result.shellOutput.stderr).to.include('Missing required flag');
     });
 
@@ -91,19 +103,19 @@ describe('metadata enrich NUTs', () => {
 
   describe('--metadata flag', () => {
     it('should accept metadata flag with LightningComponentBundle', () => {
-      const result = runEnrich(`--target-org ${TARGET_ORG} --metadata ${SAMPLE_LWC}`);
+      const result = runEnrich(`--target-org ${resolvedTargetOrg} --metadata ${SAMPLE_LWC}`);
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
 
     it('should accept multiple metadata entries', () => {
       const result = runEnrich(
-        `--target-org ${TARGET_ORG} --metadata ${SAMPLE_LWC} LightningComponentBundle:propertySummary`
+        `--target-org ${resolvedTargetOrg} --metadata ${SAMPLE_LWC} LightningComponentBundle:propertySummary`
       );
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
 
     it('should accept -m short flag', () => {
-      const result = runEnrich(`--target-org ${TARGET_ORG} -m ${SAMPLE_LWC}`);
+      const result = runEnrich(`--target-org ${resolvedTargetOrg} -m ${SAMPLE_LWC}`);
       expect(result.shellOutput.stdout || result.shellOutput.stderr).to.exist;
     });
   });
@@ -118,7 +130,7 @@ describe('metadata enrich NUTs', () => {
 
   describe('--json', () => {
     it('should output metrics-shaped JSON when --json is used and command runs', () => {
-      const result = runEnrich(`--target-org ${TARGET_ORG} --metadata ${SAMPLE_LWC} --json`);
+      const result = runEnrich(`--target-org ${resolvedTargetOrg} --metadata ${SAMPLE_LWC} --json`);
       const output = result.jsonOutput as Record<string, unknown> | undefined;
       const metrics = output?.result as Record<string, unknown> | undefined;
       if (metrics && typeof metrics === 'object') {
@@ -135,7 +147,7 @@ describe('metadata enrich NUTs', () => {
     const SINGLE_LWC_NAME = 'barcodeScanner';
 
     it('should successfully enrich a single component', () => {
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${SINGLE_LWC}`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata ${SINGLE_LWC}`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
@@ -155,7 +167,7 @@ describe('metadata enrich NUTs', () => {
     const EXPECTED_COMPONENTS = ['propertyTile', 'propertyTileList'];
 
     it('should successfully enrich all wildcard-matched components and report correct human output', () => {
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${WILDCARD_METADATA}`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata ${WILDCARD_METADATA}`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
@@ -177,7 +189,7 @@ describe('metadata enrich NUTs', () => {
     const METADATA_FLAGS = COMPONENTS.map((c) => `--metadata LightningComponentBundle:${c}`).join(' ');
 
     it('should successfully enrich multiple explicit components and report correct human output', () => {
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} ${METADATA_FLAGS}`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} ${METADATA_FLAGS}`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
@@ -200,7 +212,7 @@ describe('metadata enrich NUTs', () => {
     const META_XML_PATH = join('force-app', 'main', 'default', 'lwc', COMPONENT_NAME, `${COMPONENT_NAME}.js-meta.xml`);
 
     it('should report correct human output and update the .js-meta.xml with an <ai> tag', () => {
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata ${COMPONENT}`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
@@ -243,7 +255,7 @@ describe('metadata enrich NUTs', () => {
       const xmlBeforeEnrich = readFileSync(metaXmlFilePath, 'utf-8');
       expect(xmlBeforeEnrich).to.not.include('<ai>');
 
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata ${COMPONENT}`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
@@ -270,7 +282,7 @@ describe('metadata enrich NUTs', () => {
 
   describe('unsupported metadata type enrichment', () => {
     it('should skip and report a component not found message for an unsupported metadata type', () => {
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ApexClass:testApexClass`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata ApexClass:testApexClass`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
@@ -287,7 +299,7 @@ describe('metadata enrich NUTs', () => {
     it('should throw InvalidProjectWorkspaceError when run outside a Salesforce DX project directory', () => {
       const parentDir = join(testkit.projectDir, '..');
       const result = execCmd(
-        `metadata enrich --target-org ${TARGET_ORG} --metadata LightningComponentBundle:ankerplug`,
+        `metadata enrich --target-org ${resolvedTargetOrg} --metadata LightningComponentBundle:ankerplug`,
         {
           cwd: parentDir,
           ensureExitCode: 1,
@@ -299,7 +311,7 @@ describe('metadata enrich NUTs', () => {
 
   describe('missing metadata flag value', () => {
     it('should error when --metadata flag is provided without a value', () => {
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata`, {
         cwd: testkit.projectDir,
         ensureExitCode: 2,
       });
@@ -310,7 +322,7 @@ describe('metadata enrich NUTs', () => {
   describe('component not found in project', () => {
     it('should skip and report component not found for a non-existent LWC component', () => {
       const result = execCmd(
-        `metadata enrich --target-org ${TARGET_ORG} --metadata LightningComponentBundle:doesNotExist`,
+        `metadata enrich --target-org ${resolvedTargetOrg} --metadata LightningComponentBundle:doesNotExist`,
         {
           cwd: testkit.projectDir,
           ensureExitCode: 0,
@@ -345,7 +357,7 @@ describe('metadata enrich NUTs', () => {
       const xmlBefore = readFileSync(metaXmlFilePath, 'utf-8');
       expect(xmlBefore).to.include('<skipUplift>false</skipUplift>');
 
-      const result = execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+      const result = execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata ${COMPONENT}`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
@@ -387,7 +399,7 @@ describe('metadata enrich NUTs', () => {
       const xmlBefore = readFileSync(metaXmlFilePath, 'utf-8');
       expect(xmlBefore).to.include('<skipUplift>true</skipUplift>');
 
-      execCmd(`metadata enrich --target-org ${TARGET_ORG} --metadata ${COMPONENT}`, {
+      execCmd(`metadata enrich --target-org ${resolvedTargetOrg} --metadata ${COMPONENT}`, {
         cwd: testkit.projectDir,
         ensureExitCode: 0,
       });
