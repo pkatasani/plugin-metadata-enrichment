@@ -16,15 +16,33 @@ jobs:
   windows-unit-tests:
     needs: linux-unit-tests
     uses: salesforcecli/github-workflows/.github/workflows/unitTestsWindows.yml@main
+  # Inline NUT job (temporary, fork-only) — replaces the reusable nut.yml@main call so the env: block can
+  # forward TESTKIT_HUB_USERNAME / TESTKIT_AUTH_URL directly. Secrets don't propagate across orgs (this fork
+  # is pkatasani/*, the reusable workflow is salesforcecli/*), so `secrets: inherit` resolves to empty
+  # strings inside the reusable workflow. Revert to `uses: salesforcecli/github-workflows/...` before
+  # merging upstream.
   nuts:
     needs: linux-unit-tests
-    uses: salesforcecli/github-workflows/.github/workflows/nut.yml@main
-    secrets: inherit
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        command: ['yarn test:nuts']
       fail-fast: false
-    with:
-      os: ${{ matrix.os }}
-      command: ${{ matrix.command}}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Configure git longpaths on Windows
+        if: ${{ runner.os == 'Windows' }}
+        run: git config --system core.longpaths true
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: yarn
+      - run: npm install -g @salesforce/cli@nightly
+      - run: yarn install --frozen-lockfile
+      - run: yarn compile
+      - run: yarn oclif manifest
+      - name: Run NUTs
+        run: yarn test:nuts
+        env:
+          TESTKIT_HUB_USERNAME: ${{ secrets.TESTKIT_HUB_USERNAME }}
+          TESTKIT_AUTH_URL: ${{ secrets.TESTKIT_AUTH_URL }}
