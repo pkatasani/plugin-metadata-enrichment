@@ -29,20 +29,26 @@ const SAMPLE_LWC = 'LightningComponentBundle:barcodeScanner'; // LWC from dreamh
 
 // These NUTs always run against a pre-configured MI-eligible (preset) org — same path locally and in CI.
 //
+// Both env vars hold the *preset org* (not a DevHub). We piggyback on testkit-canonical names
+// because the upstream reusable workflow (salesforcecli/github-workflows/.github/workflows/nut.yml@main)
+// only forwards a fixed set of secret names into the test process. With `orgless: true`,
+// SourceTestkit never authenticates as a hub — its init gate just needs TESTKIT_HUB_USERNAME
+// (or TESTKIT_AUTH_URL) to be a non-empty string.
+//
 // Required:
-//   NUT_TARGET_ORG           — username of the MI-eligible preset org
+//   TESTKIT_HUB_USERNAME — username of the MI-eligible preset org
 //
 // Auth is resolved in this order:
-//   1. NUT_TARGET_ORG_AUTH_URL — SFDX auth URL (used by CI; provide as a secret)
+//   1. TESTKIT_AUTH_URL — SFDX auth URL (used by CI; provide as a repo secret)
 //   2. Locally-authenticated session — falls back to `sf org display` lookup (`sf org login web` once locally)
-const TARGET_ORG = process.env.NUT_TARGET_ORG;
-const TARGET_ORG_AUTH_URL = process.env.NUT_TARGET_ORG_AUTH_URL;
+const TARGET_ORG = process.env.TESTKIT_HUB_USERNAME;
+const TARGET_ORG_AUTH_URL = process.env.TESTKIT_AUTH_URL;
 
 if (!TARGET_ORG) {
   throw new Error(
-    'NUT_TARGET_ORG is required. Set it to the username of an MI-eligible preset org.\n' +
-      '  Local: `sf org login web --instance-url <url> --alias <alias>` then `NUT_TARGET_ORG=<username>`.\n' +
-      '  CI:    set NUT_TARGET_ORG and NUT_TARGET_ORG_AUTH_URL as secrets.'
+    'TESTKIT_HUB_USERNAME is required. Set it to the username of an MI-eligible preset org.\n' +
+      '  Local: `sf org login web --instance-url <url> --alias <alias>` then `TESTKIT_HUB_USERNAME=<username>`.\n' +
+      '  CI:    set TESTKIT_HUB_USERNAME and TESTKIT_AUTH_URL as repo secrets.'
   );
 }
 
